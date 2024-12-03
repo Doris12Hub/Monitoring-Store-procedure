@@ -1,0 +1,164 @@
+USE [DBA]
+GO
+
+/****** Object:  StoredProcedure [dbo].[lsp_Expensive_Query_Report]    Script Date: 12/2/2024 1:05:45 PM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER OFF
+GO
+
+
+
+
+
+CREATE PROCEDURE [dbo].[lsp_Expensive_Query_Report]
+as
+/********************************************************************************/
+/* Name:    lsp_mon_Log_Long_Queries.                                                    */
+/* Purpose: This proc will log the most expensive procedures                      */
+/* Inputs:  None                                                                            */
+/* Return Values: 0 if successful                                                         */
+/*                other if failed                                                                 */
+/*                                                                                                */
+/* Modification Log                                                                               */
+/* ----------------                                                             */
+/* Developer                  Date           Comment                                    */
+/* ========================   ===========  =================                        */
+/* Francis S. Mazeika          07/18/2012  Created                                  */
+/*                                                                              */
+/********************************************************************************/
+SET QUOTED_IDENTIFIER OFF 
+SET ANSI_NULLS ON 
+SET NOCOUNT ON 
+
+DECLARE @ln         VARCHAR(10)
+DECLARE @dts        DATETIME
+DECLARE @query      VARCHAR(8000)
+DECLARE @servername VARCHAR(256)
+DECLARE @subject    VARCHAR(256)
+DECLARE @excludedb  INT
+DECLARE @fromaddr   VARCHAR(128)
+
+SET @ln         = '2086281706'
+SET @dts        =  GETDATE()
+SET @servername = (SELECT @@SERVERNAME)
+SET @subject    = 'Expensive Query Report for: '+ @servername+'. '+ CONVERT(VARCHAR,@dts,100)
+SET @excludedb  = (SELECT dbid FROM master..sysdatabases WITH (NOLOCK) WHERE name = 'DBA')
+SET @fromaddr   = (SELECT REPLACE(@servername,'\','_'))
+
+--Truncate table DBA..Long_Queries_Log
+-- Collect details on the most expensive queries and log to a table    
+
+INSERT INTO DBA.dbo.Expensive_Query_Log
+SELECT DISTINCT TOP 500
+    @dts                                                                                          AS 'Sample_Date_Time',
+    db.name                                                                                       AS 'Database_Name',
+    ISNULL(OBJECT_NAME(qt.objectid,qt.dbid),qt.objectid)                                          AS 'Object_Name',
+    REPLACE(SUBSTRING(qt.text,1,8000),@ln,' ')                                                    AS 'Query_Text', 
+    qs.execution_count                                                                            AS 'Execution_Count',  
+    NULLIF(qs.total_elapsed_time,0) / (1000000.0 * 60.0)                                          AS 'Total_Elapsed_Time_In_Minutes',
+    DATEDIFF(MINUTE, qs.creation_time, @dts)                                                      AS 'Age_In_Cache',
+    ((NULLIF(qs.total_elapsed_time,0)) / (NULLIF(qs.execution_count,0)))/1000000.0                AS 'Average_Execution_Time_In_Seconds',
+    NULLIF(qs.execution_count,0) / (1.0*DATEDIFF(MINUTE, NULLIF(qs.creation_time,0), @dts))       AS 'Executions_Per_Minute',
+    qs.total_logical_reads                                                                        AS 'Total_Logical_Reads', 
+    qs.total_physical_reads                                                                       AS 'Total_Physical_Reads', 
+    qs.total_logical_writes                                                                       AS 'Total_Logical_Writes', 
+    qs.total_worker_time                                                                          AS 'Total_Worker_Time',
+    qs.creation_time                                                                              AS 'Creation_Date_Time',
+    qs.last_execution_time                                                                        AS 'Last_Execution_Date_Time',
+    NULLIF(qs.total_worker_time,0) / DATEDIFF(Minute, NULLIF(qs.creation_time,0), @dts) / 1000.0  AS 'CPU_Time_In_Millisecond_Per_Minute',
+    NULLIF(qs.total_elapsed_time,0) / DATEDIFF(Minute, NULLIF(qs.creation_time,0), @dts) / 1000.0 AS 'Execution_Time_In_Milliseconds_Per_Minute',
+    NULLIF(qs.total_logical_reads,0) / DATEDIFF(Minute, NULLIF(qs.creation_time,0), @dts)         AS 'Logical_Reads_Per_Minute',
+    NULLIF(qs.total_physical_reads,0) / DATEDIFF(Minute, NULLIF(qs.creation_time,0), @dts)        AS 'Physical_Reads_Per_Minute',
+    NULLIF(qs.max_worker_time,0) / 1000.0                                                         AS 'Max_CPU_Time_In_Milliseconds',
+    NULLIF(qs.max_elapsed_time,0) / 1000.0                                                        AS 'Max_Time_Elapsed_In_Milliseconds',
+    qs.max_logical_reads                                                                          AS 'Max_Logical_Reads',
+    qs.max_physical_reads                                                                         AS 'Max_Physical_Reads'
+
+    FROM sys.dm_exec_query_stats AS qs
+    CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) AS qt
+    JOIN sys.databases AS db ON qt.dbid = db.database_id
+     AND qt.dbid NOT IN (1,2,3,4,10,11,@excludedb)
+    WHERE qs.execution_count > 10 
+      --AND DATEDIFF(Second, qs.creation_time, @dts) >=0 
+      --AND DATEDIFF(Minute, qs.creation_time, @dts) >=0
+--ORDER BY  6 DESC,1,2,3,4,5,7,8,9,10,11,12,13,14,15,16,17,18,19,20
+    
+IF  EXISTS (SELECT * FROM DBA.dbo.sysobjects WHERE name = 'Temp_Expensive_Query_Log')
+BEGIN
+   DROP TABLE DBA.dbo.Temp_Expensive_Query_Log
+END
+
+SELECT  left(Database_Name,22)                                         AS 'DatabaseName',
+        left(Object_Name,60)                                           AS 'ObjectName',
+        CONVERT(VARCHAR(20),Execution_Count)                           AS 'Execution_Count',
+        CONVERT(VARCHAR(20),Total_Elapsed_Time_In_Minutes)             AS 'Total_Elapsed_Time_In_Minutes',
+        CONVERT(VARCHAR(20),Age_In_Cache)                              AS 'Age_In_Cache',
+        CONVERT(VARCHAR(20),Average_Execution_Time_In_Seconds)         AS 'Avg_Execution_Time_In_Seconds',
+        CONVERT(VARCHAR(20),Executions_Per_Minute)                     AS 'Executions_Per_Minute',
+        CONVERT(VARCHAR(20),Total_Logical_Reads)                       AS 'Total_Logical_Reads',
+        CONVERT(VARCHAR(20),Total_Physical_Reads)                      AS 'Total_Physical_Reads',
+        CONVERT(VARCHAR(20),Total_Logical_Writes)                      AS 'Total_Logical_Writes',
+        CONVERT(VARCHAR(20),Total_Worker_Time)                         AS 'Total_Worker_Time',
+        CONVERT(VARCHAR(20),CPU_Time_In_Millisecond_Per_Minute)        AS 'CPU_Time_In_Millisecond_Per_Minute',
+        CONVERT(VARCHAR(20),Execution_Time_In_Milliseconds_Per_Minute) AS 'Execution_Time_In_Milliseconds_Per_Minute',
+        CONVERT(VARCHAR(20),Logical_Reads_Per_Minute)                  AS 'Logical_Reads_Per_Minute',
+        CONVERT(VARCHAR(20),Physical_Reads_Per_Minute)                 AS 'Physical_Reads_Per_Minute',
+        CONVERT(VARCHAR(20),Max_CPU_Time_In_Milliseconds)              AS 'Max_CPU_Time_In_Milliseconds',
+        CONVERT(VARCHAR(20),Max_Time_Elapsed_In_Milliseconds)          AS 'Max_Time_Elapsed_In_Milliseconds',
+        CONVERT(VARCHAR(20),Max_Logical_Reads)                         AS 'Max_Logical_Reads',
+        CONVERT(VARCHAR(20),Max_Physical_Reads)                        AS 'Max_Physical_Reads',
+        LEFT(REPLACE(REPLACE(REPLACE(REPLACE(Query_Text, CHAR(9), ' '),CHAR(10), ' ') ,CHAR(13), ' '), '  ', ' '),1000) AS 'Query_Text'
+       INTO DBA..Temp_Expensive_Query_Log
+       FROM DBA..Expensive_Query_Log
+       WHERE Sample_Date_Time = @dts
+       ORDER BY Average_Execution_Time_In_Seconds
+  
+  IF (SELECT COUNT(*) FROM DBA..Temp_Expensive_Query_Log) > 1
+   BEGIN
+    EXEC msdb..sp_send_dbmail 
+	 @profile_name     = 'SQLAdmin'
+    ,@recipients       = 'SQLAdmin@phl.org'
+    --,@recipients       = 'francis.mazeika@phl.org'
+    ,@subject          =  @subject
+    ,@body             = 'Attached is the Expensive Query Report. 
+    
+    Thank you and have a nice day!
+    The Management' 
+    ,@body_format                 = 'TEXT' 
+    ,@importance                  = 'Normal' 
+    ,@query                       = 'SET NOCOUNT ON SELECT DatabaseName
+      ,ObjectName
+      ,Execution_Count
+      ,Total_Elapsed_Time_In_Minutes
+      ,Age_In_Cache
+      ,Avg_Execution_Time_In_Seconds
+      ,Executions_Per_Minute
+      ,Total_Logical_Reads
+      ,Total_Physical_Reads
+      ,Total_Logical_Writes
+      ,Total_Worker_Time
+      ,CPU_Time_In_Millisecond_Per_Minute
+      ,Execution_Time_In_Milliseconds_Per_Minute
+      ,Logical_Reads_Per_Minute
+      ,Physical_Reads_Per_Minute
+      ,Max_CPU_Time_In_Milliseconds
+      ,Max_Time_Elapsed_In_Milliseconds
+      ,Max_Logical_Reads
+      ,Max_Physical_Reads
+      ,Query_Text FROM DBA.dbo.Temp_Expensive_Query_Log'
+    ,@execute_query_database      =  'DBA' 
+    ,@attach_query_result_as_file = '1'
+    ,@query_attachment_filename   = 'Expensive Query Report.csv'
+	,@query_result_width          = 32767
+    ,@query_result_header         =  1
+    ,@query_result_separator      =  '	'
+    ,@append_query_error          = 1
+ 
+ END
+    RETURN 0
+
+GO
+
+

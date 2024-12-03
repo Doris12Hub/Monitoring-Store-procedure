@@ -1,0 +1,146 @@
+USE [DBA]
+GO
+
+/****** Object:  StoredProcedure [dbo].[lsp_db_backup_history]    Script Date: 12/2/2024 11:31:31 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+CREATE PROCEDURE [dbo].[lsp_db_backup_history]
+AS
+     SET NOCOUNT ON;
+
+     INSERT INTO [DBA].[dbo].[DB_Backup_History]
+       SELECT [a].[backup_set_id] AS                     'Backup_Set_ID',
+       [a].[media_set_id] AS                             'Media_Set_ID',
+       [a].[database_name] AS                            'Database_Name',
+       [a].[backup_finish_date] AS                       'Backup_Finish_Date',
+       SUM([a].[compressed_backup_size]) AS              'Compressed_Backup_Size_Raw',
+       SUM([a].[compressed_backup_size]) / 1073741824 AS 'Compressed_Backup_Size_GB',
+       SUM([a].[backup_size]) AS                         'Backup_Size_Raw',
+       SUM([a].[backup_size]) / 1073741824 AS            'Backup_Size_GB'
+  FROM      [msdb].[dbo].[backupset]        AS [a]
+       JOIN [msdb].[dbo].[backupfile]       AS [b] ON [a].[backup_set_id] = [b].[backup_set_id]
+  WHERE [a].[type] = 'D'
+    AND [a].[backup_finish_date] >= (GETDATE()-365)
+  GROUP BY [a].[backup_set_id],
+           [a].[media_set_id],
+           [a].[database_name],
+           [a].[backup_finish_date]
+
+     DECLARE @dbname VARCHAR(30),
+             @diff   INT;
+     DECLARE @svrname NVARCHAR(255);
+     DECLARE @tablehtml NVARCHAR(MAX);
+     DECLARE @subject1 NVARCHAR(50);
+
+     SELECT @dbname = DB_NAME(),
+            @diff = 0;
+
+     IF EXISTS
+(
+    SELECT 0
+    FROM   [sysobjects]
+    WHERE  [name] = '@Temp_Backup_Size'
+)
+         BEGIN
+             DROP TABLE [@Temp_Backup_Size];
+         END;
+
+     IF EXISTS
+(
+    SELECT 0
+    FROM   [sysobjects]
+    WHERE  [name] = '@Temp_Backup_Size2'
+)
+         BEGIN
+             DROP TABLE [@Temp_Backup_Size2];
+         END;
+
+     CREATE TABLE [@Temp_Backup_Size]
+([Row]           INT IDENTITY,
+ [Database_Name] VARCHAR(256),
+ [Backup_Date]   DATETIME,
+ [Backup_Size]   BIGINT
+);
+
+     CREATE TABLE [@Temp_Backup_Size2]
+([Database_Name]  VARCHAR(256) NULL,
+ [Start Date]     VARCHAR(12) NULL,
+ [End Date]       VARCHAR(12) NULL,
+ [Start Size(MB)] VARCHAR(12) NULL,
+ [End Size(MB)]   VARCHAR(12) NULL,
+ [Difference(MB)] VARCHAR(12) NULL,
+ [Pct Change]     VARCHAR(12) NULL
+);
+
+     INSERT INTO [@Temp_Backup_Size]
+([Database_Name],
+ [Backup_Date],
+ [Backup_Size]
+)
+            SELECT DISTINCT
+                   [Database_Name] AS 'Database_Name',
+                   [Backup_Finish_Date] AS 'Backup_Date',
+                   [Backup_Size_Raw] AS 'Backup_Size'
+            FROM   [DBA].[dbo].[DB_Backup_History] WITH (NOLOCK)
+            WHERE  DATEPART([DW], [Backup_Finish_Date]) = 1
+            ORDER BY [Database_Name],
+                     [Backup_Finish_Date];
+
+     INSERT INTO [@Temp_Backup_Size2]
+            SELECT [y1].[Database_Name],
+                   LEFT(CONVERT(VARCHAR, [y1].[Backup_Date], 101), 12) AS 'Start Date',
+                   LEFT(CONVERT(VARCHAR, [y2].[Backup_Date], 101), 12) AS 'End Date',
+                   LEFT(CONVERT(VARCHAR, PARSENAME(CONVERT(VARCHAR, CONVERT(MONEY, [y1].[Backup_Size] / 1000000), 1), 2)), 12) AS 'Start Size(MB)',
+                   LEFT(CONVERT(VARCHAR, PARSENAME(CONVERT(VARCHAR, CONVERT(MONEY, [y2].[Backup_Size] / 1000000), 1), 2)), 12) AS 'End Size(MB)',
+                   LEFT(CONVERT(VARCHAR, PARSENAME(CONVERT(VARCHAR, CONVERT(MONEY, ([y2].[Backup_Size] - [y1].[Backup_Size]) / 1000000), 1), 2)), 12) AS 'Difference(MB)',
+                   LEFT(CONVERT(VARCHAR, 100.00 * ([y2].[Backup_Size] - [y1].[Backup_Size]) / [y1].[Backup_Size])+'%', 12) AS 'Pct Change'
+            FROM   [@Temp_Backup_Size] AS [Y1]
+                   INNER JOIN [@Temp_Backup_Size] AS [Y2] ON [Y2].[row] = [Y1].[row] + 1
+  join master..sysdatabases db on db.[name] =  [y1].[Database_Name]
+            WHERE  DATEPART([DW], [y1].[Backup_Date]) = 1
+                   AND CONVERT(DATE, [y2].[Backup_Date]) > CONVERT(DATE, [y1].[Backup_Date])
+                   AND [y1].[Database_Name] NOT IN('DBA', 'Master', 'model', 'msdb')
+            ORDER BY [y1].[Database_Name],
+                     CONVERT(DATE, [y2].[Backup_Date]),
+                     CONVERT(DATE, [y1].[Backup_Date]) DESC;
+
+     SET QUOTED_IDENTIFIER ON;
+     SET @subject1 = 'Database Growth Report: '+@@servername+'.';
+     SET @tablehtml = N'<H3><FONT SIZE="3" FACE="Tahoma">Database Growth Report: '+@@servername+'. </FONT></H3>';
+     SET @tablehtml = @tablehtml+N'<table border="1">'+N'<FONT SIZE="2" FACE="Calibri">'+N'<tr><th align="center"> Database_Name </th>'+N'<th align="center"> Start Date </th>'+N'<th align="center"> End Date </th>'+N'<th align="center"> Start Size(MB) </th>'+N'<th align="center"> End Size(MB) </th>'+N'<th align="center"> Difference(MB) </th>'+N'<th align="center"> Pct Change </th>'+N'</tr>'+ISNULL(CAST(
+(
+    SELECT [td] = '',
+           [td] = [Database_Name],
+           '',
+           [td] = [Start Date],
+           '',
+           [td] = [End Date],
+           '',
+           [td] = [Start Size(MB)],
+           '',
+           [td] = [End Size(MB)],
+           '',
+           [td] = [Difference(MB)],
+           '',
+           [td] = [Pct Change],
+           ''
+    FROM   [@Temp_Backup_Size2] FOR XML PATH('tr'), TYPE
+) AS NVARCHAR(MAX)), '')+N'</FONT>'+N'</table>'+'<br> Thank You And Have A Nice Day! <br>&nbsp;&nbsp;The Management';
+
+     EXEC [msdb].[dbo].[sp_send_dbmail]
+          @profile_name = 'SQLAdmin',
+          @recipients = 'SQLAdmin@phl.org',
+          @subject = @subject1,
+          @body = @tablehtml,
+          @body_format = 'HTML';
+
+     RETURN(0);
+GO
+
+

@@ -1,0 +1,83 @@
+USE [DBA]
+GO
+
+/****** Object:  StoredProcedure [dbo].[lsp_drivespace_report_bkup1]    Script Date: 12/2/2024 1:04:48 PM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER OFF
+GO
+
+
+
+CREATE PROCEDURE [dbo].[lsp_drivespace_report_bkup1]
+AS
+     SET QUOTED_IDENTIFIER OFF;
+     SET NOCOUNT ON;
+     DECLARE @svrname NVARCHAR(255);
+     DECLARE @sql NVARCHAR(400);
+     DECLARE @tablehtml NVARCHAR(MAX);
+     DECLARE @rootdir NVARCHAR(500);
+     DECLARE @bcpout NVARCHAR(256);
+     DECLARE @subject1 NVARCHAR(50);
+     DECLARE @attachement NVARCHAR(256);
+     DECLARE @errlogloc NVARCHAR(256);
+     DECLARE @bcpclear NVARCHAR(256);
+     SET @svrname = CONVERT(NVARCHAR,
+                           (
+                               SELECT SERVERPROPERTY('MACHINENAME')
+                           ));
+     SET @sql = 'powershell.exe -c "Get-WmiObject -ComputerName '+QUOTENAME(@svrname, '''')+' -Class Win32_Volume -Filter ''DriveType = 3'' | select name,capacity,freespace | foreach{$_.name+''|''+$_.capacity/1024+''%''+$_.freespace/1024+''*''}"';
+     SET @subject1 = 'Warning Drive Space Less Than 10% on '+@@SERVERNAME;
+     CREATE TABLE [#output]([line] VARCHAR(255));
+     INSERT INTO [#output]
+     EXEC [xp_cmdshell]
+          @sql;
+     SELECT RTRIM(LTRIM(SUBSTRING([line], 1, CHARINDEX('|', [line])-1))) AS [Drivename],
+            ROUND(CAST(RTRIM(LTRIM(SUBSTRING([line], CHARINDEX('|', [line])+1, CHARINDEX('%', [line])-1-CHARINDEX('|', [line])))) AS FLOAT), 0) AS 'Capacity(MB)',
+            ROUND(CAST(RTRIM(LTRIM(SUBSTRING([line], CHARINDEX('%', [line])+1, CHARINDEX('*', [line])-1-CHARINDEX('%', [line])))) AS FLOAT), 0) AS 'Freespace(MB)'
+     INTO [#temp1]
+     FROM [#output]
+     WHERE [line] LIKE '[A-Z][:]%'
+     ORDER BY [drivename];
+     SET @tablehtml = N'<H3><FONT SIZE="3" FACE="Tahoma">Drive Space Less Than 10% on '+@@SERVERNAME+'. Please Correct ASAP! </FONT></H3>';
+     SET @tablehtml = @tablehtml+N'<table border="1">'+N'<FONT SIZE="2" FACE="Calibri">'+N'<tr><th align="center"> Drive Mount </th>'+N'<th align="center"> Capacity (GB) </th>'+N'<th align="center"> Free Space (GB) </th>'+N'<th align="center"> Space Used (GB) </th>'+N'<th align="center"> Pct Full </th>'+N'<th align="center"> Add(GB) </th>'+N'<th align="center"> New Size (GB) </th>'+N'</tr>'+ISNULL(CAST(
+                                                                                                                                                                                                                                                                                                                                                                                                                     (
+                                                                                                                                                                                                                                                                                                                                                                                                                         SELECT [td] = '',
+                                                                                                                                                                                                                                                                                                                                                                                                                                [td] = [Drivename],
+                                                                                                                                                                                                                                                                                                                                                                                                                                '',
+                                                                                                                                                                                                                                                                                                                                                                                                                                [td] = LEFT(REPLACE(CONVERT(VARCHAR, CONVERT(MONEY, [capacity(MB)]), 1), '.00', ''), 7),
+                                                                                                                                                                                                                                                                                                                                                                                                                                '',
+                                                                                                                                                                                                                                                                                                                                                                                                                                [td] = LEFT(REPLACE(CONVERT(VARCHAR, CONVERT(MONEY, [freespace(MB)]), 1), '.00', ''), 6),
+                                                                                                                                                                                                                                                                                                                                                                                                                                '',
+                                                                                                                                                                                                                                                                                                                                                                                                                                [td] = LEFT(REPLACE(CONVERT(VARCHAR, CONVERT(MONEY, [capacity(MB)] - [freespace(MB)]), 1), '.00', ''), 7),
+                                                                                                                                                                                                                                                                                                                                                                                                                                '',
+                                                                                                                                                                                                                                                                                                                                                                                                                                [td] = CAST(CONVERT(VARCHAR(MAX), (CAST([capacity(MB)] AS DECIMAL) - CAST([freespace(MB)] AS DECIMAL)) / CAST([capacity(MB)] AS DECIMAL) * 100) AS DECIMAL(5, 2)),
+                                                                                                                                                                                                                                                                                                                                                                                                                                '',
+                                                                                                                                                                                                                                                                                                                                                                                                                                [td] = LEFT(REPLACE(CONVERT(VARCHAR, CONVERT(MONEY, ([capacity(MB)] - [freespace(MB)]) * 1.20 - ([capacity(MB)] - [freespace(MB)])), 1), '.00', ''), 6),
+                                                                                                                                                                                                                                                                                                                                                                                                                                '',
+                                                                                                                                                                                                                                                                                                                                                                                                                                [td] = LEFT(REPLACE(CONVERT(VARCHAR, CONVERT(MONEY, [capacity(MB)] + ([capacity(MB)] - [freespace(MB)]) * 1.20 - ([capacity(MB)] - [freespace(MB)])), 1), '.00', ''), 6),
+                                                                                                                                                                                                                                                                                                                                                                                                                                ''
+                                                                                                                                                                                                                                                                                                                                                                                                                         FROM [#temp1]
+                                                                                                                                                                                                                                                                                                                                                                                                                         WHERE(CAST([capacity(MB)] AS DECIMAL) - CAST([freespace(MB)] AS DECIMAL)) / CAST([capacity(MB)] AS DECIMAL) * 100 > 80 FOR XML PATH('tr'), TYPE
+                                                                                                                                                                                                                                                                                                                                                                                                                     ) AS NVARCHAR(MAX)), '')+N'</FONT>'+N'</table>'+'<br> Thank You And Have A Nice Day! <br>&nbsp;&nbsp;The Management';
+     IF EXISTS
+     (
+         SELECT 0
+         FROM [#temp1]
+         WHERE(CAST([capacity(MB)] AS DECIMAL) - CAST([freespace(MB)] AS DECIMAL)) / CAST([capacity(MB)] AS DECIMAL) * 100 > 90
+     )
+         BEGIN
+             EXEC [msdb].[dbo].[sp_send_dbmail]
+                  @profile_name = 'SQLAdmin',
+                  @recipients = 'SQLAdmin@phl.org',
+                  @subject = @subject1,
+                  @body = @tablehtml,
+                  @body_format = 'HTML';
+     END;
+     DROP TABLE [#output];
+     DROP TABLE [#temp1];
+     RETURN(0);
+GO
+
+

@@ -1,0 +1,65 @@
+USE [DBA]
+GO
+
+/****** Object:  StoredProcedure [dbo].[lsp_Deadlock_rpt]    Script Date: 12/2/2024 12:59:31 PM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+
+CREATE PROCEDURE [dbo].[lsp_Deadlock_rpt]
+AS
+     DROP TABLE [DBA].[Dbo].[Deadlock_Rpt];
+	--drop table #tempDeadlockcounts
+     DECLARE @Date_From DATETIME,
+             @Date_To   DATETIME;
+     SET @Date_From = GETDATE() - 45;
+--(
+--    SELECT min(alerttime)---getdate()-30
+--    FROM dba..Deadlock
+--);
+--select @date_from
+     SET @Date_To =
+     (
+         SELECT MAX([Alerttime])
+         FROM [DBA]..[Deadlock]
+     );
+     WITH Dates
+          AS (
+          SELECT CONVERT(VARCHAR(10), @Date_From, 101) AS [Dt]
+          UNION ALL
+          SELECT CONVERT(VARCHAR(10), DATEADD([D], 1, [Dt]), 101)
+          FROM [Dates]
+          WHERE [Dt] < @Date_To)
+          SELECT [Dt] AS                                          'EventDay',
+                 COUNT(CONVERT(VARCHAR(10), [Alerttime], 101)) AS 'Counts'
+          INTO [#TempDeadlockcounts]
+          FROM [Dates]
+          FULL JOIN [DBA].[Dbo].[Deadlock] ON CONVERT(VARCHAR(10), [Dt], 101) = CONVERT(VARCHAR(10), [Alerttime], 101)
+          GROUP BY [Dt];
+     SELECT [Eventday],
+            [Counts]
+     INTO [DBA].[Dbo].[Deadlock_Rpt]
+     FROM [#TempDeadlockcounts]
+     WHERE [Eventday] IS NOT NULL
+     ORDER BY convert(datetime,[Eventday]);
+
+
+CREATE CLUSTERED INDEX [CIDX_Deadlock_rpt_Eventday] ON [dbo].[Deadlock_rpt]
+(
+	[Eventday] ASC
+)WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, SORT_IN_TEMPDB = OFF, DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON)
+
+
+     
+	SELECT [Eventday],
+            [Counts]
+     FROM [DBA].[Dbo].[Deadlock_Rpt]
+     --ORDER BY 1;
+GO
+
+

@@ -1,0 +1,138 @@
+USE [DBA]
+GO
+
+/****** Object:  StoredProcedure [dbo].[lsp_GetJobSchedule]    Script Date: 12/2/2024 12:13:59 PM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER OFF
+GO
+
+
+
+CREATE PROCEDURE [dbo].[lsp_GetJobSchedule]
+
+AS
+
+SET QUOTED_IDENTIFIER  OFF
+SET NOCOUNT ON
+SET ANSI_NULLS ON
+
+IF EXISTS (SELECT 0 FROM tempdb..sysobjects WHERE name =  '##JobInfo')
+	BEGIN 
+	 DROP TABLE ##JobInfo
+	END
+IF EXISTS (SELECT 0 FROM tempdb..sysobjects WHERE name =  '##JobInfoFinal')
+	BEGIN 
+	 DROP TABLE ##JobInfoFinal
+	END
+
+DECLARE @cmd1     NVARCHAR(256)
+DECLARE @cmd2     NVARCHAR(256)
+DECLARE @instance NVARCHAR(256)
+
+SET @instance = (SELECT @@SERVERNAME)
+
+SET @cmd1 = "EXEC SP_SERVEROPTION '"+@instance+"', 'DATA ACCESS', 'TRUE'"
+EXEC (@cmd1)
+
+SET @cmd2 = "SELECT * INTO ##JobInfo FROM OPENQUERY(["+@instance+"], ' EXEC msdb.dbo.sp_get_composite_job_info')"
+EXEC (@cmd2)
+
+SELECT LEFT(Name,64) AS 'Job Name',
+
+	 CASE 
+      WHEN last_run_outcome = 0 THEN 'Failed'
+      WHEN last_run_outcome = 1 THEN 'Succeeded'
+      WHEN last_run_outcome = 2 THEN 'Retry'
+      WHEN last_run_outcome = 3 THEN 'Canceled'
+      WHEN last_run_outcome = 4 THEN 'In progress'
+         ELSE 'Unknown' END  AS 'Last Outcome',
+
+	 CASE 
+      WHEN current_execution_status = 0 THEN 'Returns only those jobs that are not idle or suspended'
+      WHEN current_execution_status = 1 THEN 'Executing'
+      WHEN current_execution_status = 2 THEN 'Waiting for Thread'
+      WHEN current_execution_status = 3 THEN 'Between Retries'
+      WHEN current_execution_status = 4 THEN 'Idle'
+      WHEN current_execution_status = 5 THEN 'Suspended'
+      WHEN current_execution_status = 7 THEN 'Performing completion actions'
+         ELSE 'Unknown' END  AS 'Current Status',
+
+	'Job Enabled' = CASE Enabled
+		WHEN 1 THEN 'Yes'
+		WHEN 0 THEN 'No'
+	END,
+	
+         'Scheduled' = CASE has_schedule
+		WHEN 1 THEN 'Yes'
+		WHEN 0 THEN 'No'
+	END,
+
+	LEFT([Owner],32) AS 'Job Owner',
+
+	'Last Run Date' = case last_run_date
+		WHEN 0 THEN null
+		ELSE
+		substring(convert(varchar(15),last_run_date),1,4) + '/' + 
+		substring(convert(varchar(15),last_run_date),5,2) + '/' + 
+		substring(convert(varchar(15),last_run_date),7,2)
+	END,
+
+	'Last Run Time' = CASE len(last_run_time)
+		WHEN 1 THEN cast('00:00:0' + right(last_run_time,2) as char(8))
+		WHEN 2 THEN cast('00:00:' + right(last_run_time,2) as char(8))
+		WHEN 3 THEN cast('00:0' 
+				+ Left(right(last_run_time,3),1)  
+				+':' + right(last_run_time,2) as char (8))
+		WHEN 4 THEN cast('00:' 
+				+ Left(right(last_run_time,4),2)  
+				+':' + right(last_run_time,2) as char (8))
+		WHEN 5 THEN cast('0' 
+				+ Left(right(last_run_time,5),1) 
+				+':' + Left(right(last_run_time,4),2)  
+				+':' + right(last_run_time,2) as char (8))
+		WHEN 6 THEN cast(Left(right(last_run_time,6),2) 
+				+':' + Left(right(last_run_time,4),2)  
+				+':' + right(last_run_time,2) as char (8))
+	END,
+	
+	'Next Run Date' = case next_run_date
+		WHEN 0 THEN null
+		ELSE
+		substring(convert(varchar(15),next_run_date),1,4) + '/' + 
+		substring(convert(varchar(15),next_run_date),5,2) + '/' + 
+		substring(convert(varchar(15),next_run_date),7,2)
+	END,
+
+	'Next Run Time' = CASE len(next_run_time)
+		WHEN 1 THEN cast('00:00:0' + right(next_run_time,2) as char(8))
+		WHEN 2 THEN cast('00:00:' + right(next_run_time,2) as char(8))
+		WHEN 3 THEN cast('00:0' 
+				+ Left(right(next_run_time,3),1)  
+				+':' + right(next_run_time,2) as char (8))
+		WHEN 4 THEN cast('00:' 
+				+ Left(right(next_run_time,4),2)  
+				+':' + right(next_run_time,2) as char (8))
+		WHEN 5 THEN cast('0' 
+				+ Left(right(next_run_time,5),1) 
+				+':' + Left(right(next_run_time,4),2)  
+				+':' + right(next_run_time,2) as char (8))
+		WHEN 6 THEN cast(Left(right(next_run_time,6),2) 
+				+':' + Left(right(next_run_time,4),2)  
+				+':' + right(next_run_time,2) as char (8))
+	END,
+	
+	    'Notify By EMail' = CASE notify_level_email
+		WHEN 0 THEN 'No' ELSE 'Yes'
+		END
+	
+ INTO ##JobInfoFinal
+ FROM ##JobInfo
+ ORDER BY 1
+
+RETURN(0)
+
+GO
+
+

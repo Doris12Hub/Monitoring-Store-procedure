@@ -1,0 +1,108 @@
+USE [DBA]
+GO
+
+/****** Object:  StoredProcedure [dbo].[lsp_high_cpu_alert]    Script Date: 12/2/2024 12:15:41 PM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+
+CREATE PROCEDURE [dbo].[lsp_high_cpu_alert]
+AS
+     SET QUOTED_IDENTIFIER OFF;
+     SET NOCOUNT ON;
+     SET ANSI_PADDING ON;
+
+     DECLARE @ts_now BIGINT;
+     DECLARE @svrname NVARCHAR(255);
+     DECLARE @tablehtml NVARCHAR(MAX);
+     DECLARE @subject1 NVARCHAR(50);
+
+     CREATE TABLE [@highcpuusage]
+([Event_Time]       [VARCHAR](30) NULL,
+ [SQL_CPU_Usage%]   [INT] NULL,
+ [System_Idle%]     [INT] NULL,
+ [Other_CPU_Usgae%] [INT] NULL,
+ [CPU Usage%]       [INT] NULL
+);
+
+     SET @subject1 = 'Warning CPU Greater Than 50% on '+@@SERVERNAME;
+
+     SET QUOTED_IDENTIFIER ON;
+     SELECT @ts_now = [cpu_ticks] / ([cpu_ticks] / [ms_ticks])
+     FROM   [sys].[dm_os_sys_info];
+
+     INSERT INTO [@highcpuusage]
+            SELECT TOP 1 CONVERT(VARCHAR, DATEADD([ms], -1 * (@ts_now - TIMESTAMP), GETDATE()), 100) AS 'Event_Time',
+                         [sqlprocessutilization] AS 'SQL_CPU_Usage%',
+                         [systemidle] AS 'System_Idle%',
+                         100 - [systemidle] - [sqlprocessutilization] AS 'Other_CPU_Usgae%',
+                         100 - [systemidle] - [sqlprocessutilization] + [sqlprocessutilization] AS 'CPU Usage%'
+            FROM
+(
+    SELECT    [record].value('(./Record/@id)[1]', 'int') AS [record_id],
+              [record].value('(./Record/SchedulerMonitorEvent/SystemHealth/SystemIdle)[1]', 'int') AS [systemidle],
+              [record].value('(./Record/SchedulerMonitorEvent/SystemHealth/ProcessUtilization)[1]', 'int') AS [sqlprocessutilization],
+              TIMESTAMP AS timestamp
+    FROM
+(
+    SELECT TIMESTAMP,
+           CONVERT(XML, [record]) AS [record]
+    FROM   [sys].[dm_os_ring_buffers]
+    WHERE     [ring_buffer_type] = N'RING_BUFFER_SCHEDULER_MONITOR'
+              AND [record] LIKE '%%'
+) AS [x]
+) AS [y]
+            ORDER BY [record_id] DESC;
+
+     SET QUOTED_IDENTIFIER ON;
+     SET @tablehtml = N'<H3><FONT SIZE="3" FACE="Tahoma">CPU on '+@@servername+' is greater than 50%. Please Investigate ASAP! </FONT></H3>';
+     SET @tablehtml = @tablehtml+N'<table border="1">'+
+	N'<FONT SIZE="2" FACE="Calibri">'+
+	N'<tr><th align="center"> Event_Time </th>'+
+	N'<th align="center"> SQL_CPU_Usage% </th>'+
+	N'<th align="center"> System_Idle% </th>'+
+	N'<th align="center"> Other_CPU_Usgae% </th>'+
+	N'<th align="center"> CPU Usage% </th>'+
+	N'</tr>'+ISNULL(CAST(
+(
+    SELECT [td] = '',
+           [td] = [Event_Time],
+           '',
+           [td] = [SQL_CPU_Usage%],
+           '',
+           [td] = [System_Idle%],
+           '',
+           [td] = [Other_CPU_Usgae%],
+           '',
+           [td] = [CPU Usage%],
+           ''
+    FROM   [@highcpuusage] FOR XML PATH('tr'), TYPE
+) AS NVARCHAR(MAX)), '')+N'</FONT>'+N'</table>'+'<br> Thank You And Have A Nice Day! <br>&nbsp;&nbsp;The Management';
+
+     IF EXISTS
+(
+    SELECT 0
+    FROM   [@highcpuusage]
+    WHERE  [CPU Usage%] > 50
+)
+         BEGIN
+             EXEC [msdb].[dbo].[sp_send_dbmail]
+                  @profile_name = 'SQLAdmin',
+                  @recipients = 'SQLAdmin@phl.org',
+                  @subject = @subject1,
+                  @body = @tablehtml,
+                  @body_format = 'HTML';
+
+         END;
+
+     DROP TABLE [@highcpuusage];
+
+     RETURN 0;
+GO
+
+

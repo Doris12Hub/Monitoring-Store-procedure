@@ -1,0 +1,149 @@
+USE [DBA]
+GO
+
+/****** Object:  StoredProcedure [dbo].[lsp_Low_Disk_Space_Check]    Script Date: 12/2/2024 12:18:53 PM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER OFF
+GO
+
+
+
+CREATE PROCEDURE [dbo].[lsp_Low_Disk_Space_Check]
+AS
+/********************************************************************************/
+/* Name:    lsp_Check_Disk_Space.                                               */
+/* Purpose: This proc will check the fullness of each drive                     */
+/* Inputs:  None                                                                */
+/* Return Values: 0 if successful                                               */
+/*                other if failed                                               */
+/*                                                                              */
+/* Modification Log                                                             */
+/* ----------------                                                             */
+/* Developer                  Date           Comment                            */
+/* ========================   ===========  =================                    */
+/* Francis S. Mazeika          12/26/2023  Created                              */
+/*                                                                              */
+/********************************************************************************/
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+SET NOCOUNT ON;
+
+/*****************************************************************************************************/
+-- Housekeeping
+IF EXISTS (SELECT 0 FROM sysobjects WHERE [name] = 'DriveSpaceResult')
+ BEGIN
+  DROP TABLE DriveSpaceResult;
+ END;
+
+ IF EXISTS (SELECT 0 FROM sysobjects WHERE [name] = 'DriveSpaceResult_II')
+ BEGIN
+  DROP TABLE DriveSpaceResult_II;
+ END;
+
+/*****************************************************************************************************/
+-- Define the Parms
+DECLARE @ln           VARCHAR(10)
+DECLARE @dts          DATETIME
+DECLARE @pct          VARCHAR(32)
+DECLARE @query        VARCHAR(8000)
+DECLARE @instancename VARCHAR(256)
+DECLARE @servername   VARCHAR(256)
+DECLARE @subject      VARCHAR(256)
+DECLARE @sqlcmd       VARCHAR(400)
+DECLARE @tableHTML    NVARCHAR(MAX)
+
+/*****************************************************************************************************/
+--creating a temporary tables
+CREATE TABLE DriveSpaceResult
+            (line varchar(255));
+
+CREATE TABLE [dbo].[DriveSpaceResult_II](
+	               [DriveName]      [varchar](32),
+	               [Capacity(MB)]   [varchar](32),
+	               [FreeSpace(MB)]  [varchar](32),
+	               [PCT_Used(MB)]   float(24));--[varchar](32));
+
+/*****************************************************************************************************/
+-- Set the parms
+SELECT @servername   = CONVERT(VARCHAR(32),SERVERPROPERTY ('MachineName'))    -- Server Name
+SELECT @instancename = CONVERT(VARCHAR(32), ISNULL(SERVERPROPERTY('ServerName') , SERVERPROPERTY( 'MachineName' ))) -- SQL Instance Name
+
+SET @pct       = '80'
+SET @dts       = GETDATE()
+SET @subject   = 'ALERT: Used Disk Space Over '+@pct+' PCT on Server: '+ @servername+'. '+ CONVERT(VARCHAR,@dts,100)
+SET @sqlcmd    = 'powershell.exe -c "Get-WmiObject -ComputerName ' + QUOTENAME(@servername,'''') + ' -Class Win32_Volume -Filter ''DriveType = 3'' | select name,capacity,freespace | foreach{$_.name+''|''+$_.capacity/1048576+''%''+$_.freespace/1048576+''*''}"'
+
+/*****************************************************************************************************/
+--inserting disk name, total space and free space value in to temporary table
+INSERT DriveSpaceResult
+EXEC xp_cmdshell @sqlcmd;
+
+/*****************************************************************************************************/
+--script to retrieve the values in MB from PS Script output
+INSERT INTO DriveSpaceResult_II
+SELECT RTRIM(LTRIM(SUBSTRING(line,1,CHARINDEX('|',line) -1)))                                                                                                                         AS 'Drivename'
+      ,REPLACE(CONVERT(VARCHAR,CAST(ROUND(CAST(RTRIM(LTRIM(SUBSTRING(line,CHARINDEX('|',line)+1,(CHARINDEX('%',line) -1)-CHARINDEX('|',line)) )) AS FLOAT),0)  AS MONEY),1),'.00','') AS 'Capacity(MB)'
+      ,REPLACE(CONVERT(VARCHAR,CAST(ROUND(CAST(RTRIM(LTRIM(SUBSTRING(line,CHARINDEX('%',line)+1,(CHARINDEX('*',line) -1)-CHARINDEX('%',line)) )) AS FLOAT),0) AS MONEY),1),'.00','')  AS 'FreeSpace(MB)'
+      ,CONVERT(VARCHAR,CAST((((ROUND(CAST(RTRIM(ltrim(SUBSTRING(line,CHARINDEX('|',line)+1,(CHARINDEX('%',line) -1)-CHARINDEX('|',line)))) AS FLOAT),0) -
+       ROUND(CAST(RTRIM(LTRIM(SUBSTRING(line,CHARINDEX('%',line)+1,(CHARINDEX('*',line) -1)-CHARINDEX('%',line)) )) AS FLOAT),0))  
+       /ROUND(CAST(RTRIM(LTRIM(SUBSTRING(line,CHARINDEX('|',line)+1,(CHARINDEX('%',line) -1)-CHARINDEX('|',line)) )) AS FLOAT),0)) * 100) AS MONEY), 1)                               AS 'PCT_Used(MB)'
+	
+FROM DriveSpaceResult
+WHERE line LIKE '[A-Z][:]%'
+ORDER BY Drivename;
+
+/*****************************************************************************************************/
+-- If drive is over @pct then build the html result and send email alert
+IF EXISTS (SELECT 0 FROM DriveSpaceResult_II WHERE [PCT_Used(MB)] > @pct)
+ BEGIN -- Begin1
+			SET @tableHTML = N'<H3><FONT SIZE="3" FACE="Tahoma">Used Disk Space Over '+@pct+' PCT for Server: '+@servername+'. <br>Date\Time: '+CONVERT(VARCHAR,@dts,100)+'.<br><br></FONT></H3>'
+			SET @tableHTML = @tableHTML+ N'<table border="1">' +
+						N'<FONT SIZE="2" FACE="Calibri">' +            
+						N'<tr><th align="center">Drive Name</th>' +
+						N'<th align="center">Capacity (MB)</th>' +
+						N'<th align="center">Free Space (MB)</th>' +
+						N'<th align="center">PCT Used</th>' +
+						N'</tr>' +
+						ISNULL(CAST ((SELECT  td = '',
+											  td = [DriveName] ,'',
+											  td = [Capacity(MB)],'',
+   											  td = [FreeSpace(MB)],'',
+											  td = [PCT_Used(MB)],''
+										 FROM DriveSpaceResult_II
+										 ORDER BY DriveName 
+				FOR XML PATH('tr'), TYPE) AS NVARCHAR(MAX) ),'''') + N'</FONT>' +
+						N'</table>' +  '<br>'+ '		
+						Thank you and have a nice day!! <br>
+						&nbsp; &nbsp; &nbsp; The Management.'
+
+/*****************************************************************************************************/
+-- email section
+			EXEC msdb.dbo.sp_send_dbmail 
+						@profile_name     = 'SQLAdmin',        
+						@recipients       = 'SQLAdmin@phl.org', 
+						@subject          = @subject,
+						@body             = @tableHTML,
+						@body_format      = 'HTML'    
+
+ END -- this is the end of Begin1
+
+
+--/*****************************************************************************************************/
+---- Housekeeping
+IF EXISTS (SELECT 0 FROM sysobjects WHERE name = 'DriveSpaceResult')
+ BEGIN
+  DROP TABLE DriveSpaceResult
+ END;
+
+ IF EXISTS (SELECT 0 FROM sysobjects WHERE name = 'DriveSpaceResult_II')
+ BEGIN
+  DROP TABLE DriveSpaceResult_II
+ END;
+
+ /********************************************** The End **********************************************/
+ RETURN (0)
+GO
+
+
